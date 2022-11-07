@@ -1,0 +1,1 @@
+pub mod scraper_2022;

@@ -1,0 +1,19 @@
+[package]
+name = "PredictionBackendV2"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tide = "0.16.0"
+async-std = { version = "1.8.0", features = ["attributes"] }
+serde = { version = "1.0", features = ["derive"] }
+rusqlite = { version = "0.28.0", features = ["bundled"] }
+reqwest = { version = "0.11.12", features = ["json", "blocking"] }
+tokio = { version = "1", features = ["full"] }
+serde_json = "1.0"
+csv = "1.1"
+nalgebra = "0.31.2"
+tide-governor = "1.0.3"
+tokio-rusqlite = "0.3.0"
