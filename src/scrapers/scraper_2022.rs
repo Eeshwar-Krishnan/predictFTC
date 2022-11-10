@@ -169,7 +169,58 @@ pub(crate) struct Match_2022{
     totalPoints: i32,
 }
 
-pub(crate) async fn scrape(conn: &Connection){
+#[derive(Serialize, Deserialize)]
+struct Team{
+    teamNumber: i32,
+    nameFull: Option<String>,
+    nameShort: Option<String>,
+    schoolName: Option<String>,
+    city: Option<String>,
+    stateProv: Option<String>,
+    country: Option<String>,
+    website: Option<String>,
+    rookieYear: Option<i32>,
+    robotName: Option<String>,
+    districtCode: Option<String>,
+    homeCMP: Option<String>
+}
+
+#[derive(Serialize, Deserialize)]
+struct Teams_Response{
+    teams: Vec<Team>,
+    teamCountTotal: i32,
+    teamCountPage: i32,
+    pageCurrent: i32,
+    pageTotal: i32
+}
+
+pub(crate) async fn scrapeToday(conn: &Connection){
+    let api_key_local;
+    unsafe{
+        api_key_local = &API_KEY;
+    }
+    let client = reqwest::Client::new();
+
+    let mut req = client.get(format!("https://ftc-api.firstinspires.org/v2.0/2022/events"))
+                .header("Authorization", format!("Basic {}", api_key_local))
+                .header("content-type", "application/json")
+                .build().unwrap();
+    
+    let events_response: EventResponse = serde_json::from_str(&client.execute(req).await.unwrap().text().await.unwrap()).unwrap();
+
+    let mut events: Vec<String> = Vec::new();
+    for event in events_response.events{
+        let eventDate = format!("{}Z", event.dateEnd.unwrap());
+        if((chrono::offset::Utc::now().timestamp_millis() - DateTime::parse_from_rfc3339(&eventDate).unwrap().timestamp_millis()).abs() > (3.6e+6 as i64)){
+            continue;
+        }
+        events.push(event.code);
+    }
+
+    scrape(conn, Some(events), false).await;
+}
+
+pub(crate) async fn scrape(conn: &Connection, eventslist: Option<Vec<String>>, updateTeams: bool){
     let api_key_local;
     unsafe{
         api_key_local = &API_KEY;
@@ -192,20 +243,35 @@ pub(crate) async fn scrape(conn: &Connection){
     static mut matches: Vec<EventMatchResult> = Vec::new();
     static mut codes: Vec<String> = Vec::new();
     
-    let mut idx = 0;
-    let mut numEvents = events_response.events.len();
-    for event in events_response.events{
+    let events_to_scrape: Vec<String> = match(eventslist){
+        Some(val) => val,
+        None => events_response.events.iter().map(|val|{val.code.clone()}).collect(),
+    };
+
+    let numToScrape = events_to_scrape.len();
+    for idx in 0..numToScrape{
+        let eventCode = events_to_scrape.get(idx).unwrap();
+        if(idx % 25 == 0){
+            println!("2022: {} of {} events processed", idx, numToScrape);
+        }
+
+        /*
         let eventDate = format!("{}Z", event.dateEnd.unwrap());
-        let eventCode = event.code;
         if(chrono::offset::Utc::now().timestamp_millis() - DateTime::parse_from_rfc3339(&eventDate).unwrap().timestamp_millis() < (3.6e+6 as i64)){
             continue;
         }
+        */
         let mut req = client.get(format!("https://ftc-api.firstinspires.org/v2.0/2022/scores/{}/qual", eventCode))
                 .header("Authorization", format!("Basic {}", api_key_local))
                 .header("content-type", "application/json")
                 .build().unwrap();
 
-        let mut result: Match_Result_Response_2022 = serde_json::from_str(&client.execute(req).await.unwrap().text().await.unwrap()).unwrap();
+        let mut response = client.execute(req).await.unwrap();
+        let mut serde_result = serde_json::from_str(&response.text().await.unwrap());
+        if(serde_result.is_err()){
+            continue;
+        }
+        let mut result: Match_Result_Response_2022 = serde_result.unwrap();
 
         let mut req = client.get(format!("https://ftc-api.firstinspires.org/v2.0/2022/matches/{}", eventCode))
                 .header("Authorization", format!("Basic {}", api_key_local))
@@ -225,8 +291,6 @@ pub(crate) async fn scrape(conn: &Connection){
                 codes.push(eventCode.clone());
             }
         }
-
-        idx += 1;
         
     }
 
@@ -236,15 +300,17 @@ pub(crate) async fn scrape(conn: &Connection){
 
     unsafe{
         conn.call(|conn|{
-            //conn.execute("DELETE FROM matches2022", []).unwrap();
+            conn.execute("DELETE FROM matches2022", []).unwrap();
         }).await;
         for index in 0..matches.len(){
+                if(index % 50 == 0){
+                    println!("2022: Finished processing {} matches of {}", index, matches.len());
+                }
                 let code = codes.get(index);
                 let eventcode = code.unwrap();
                 let scores = results.get(index).unwrap();
                 let matchval = matches.get(index).unwrap();
                 conn.call(move |conn|{
-                    conn.execute(&format!("DELETE FROM matches2022 WHERE eventcode='{}' AND team1={} AND team2={}", eventcode, matchval.teams.get(2).unwrap().teamNumber, matchval.teams.get(3).unwrap().teamNumber), []).unwrap();
                     let blue = scores.alliances.get(0).unwrap();
                     let red = scores.alliances.get(1).unwrap();
                     let blueres = conn.execute(&format!("INSERT INTO matches2022 (eventcode, team1, team2, matchNumber, randomization, alliance, team, sideOfField, initSignalSleeve1, initSignalSleeve2, robot1Auto, robot2Auto, autoTerminal, autoJunctions11, autoJunctions12, autoJunctions13, autoJunctions14, autoJunctions15, autoJunctions21, autoJunctions22, autoJunctions23, autoJunctions24, autoJunctions25, autoJunctions31, autoJunctions32, autoJunctions33, autoJunctions34, autoJunctions35, autoJunctions41, autoJunctions42, autoJunctions43, autoJunctions44, autoJunctions45, autoJunctions51, autoJunctions52, autoJunctions53, autoJunctions54, autoJunctions55, dcJunctions11, dcJunctions12, dcJunctions13, dcJunctions14, dcJunctions15, dcJunctions21, dcJunctions22, dcJunctions23, dcJunctions24, dcJunctions25, dcJunctions31, dcJunctions32, dcJunctions33, dcJunctions34, dcJunctions35, dcJunctions41, dcJunctions42, dcJunctions43, dcJunctions44, dcJunctions45, dcJunctions51, dcJunctions52, dcJunctions53, dcJunctions54, dcJunctions55, dcTerminalNear, dcTerminalFar, egNavigated1, egNavigated2, minorPenalties, majorPenalties, autoNavigationPoints, signalBonusPoints, autoJunctionConePoints, autoTerminalConePoints, dcJunctionConePoints, dcTerminalConePoints, ownershipPoints, circuitPoints, egNavigationPoints, autoPoints, dcPoints, endgamePoints, penaltyPointsCommitted, prePenaltyTotal, autoJunctionConesGnd, autoJunctionConesLow, autoJunctionConesMed, autoJunctionConesHigh, dcJunctionConesGnd, dcJunctionConesLow, dcJunctionConesMed, dcJunctionConesHigh, beacons, ownedJunctions, circuit, totalPoints) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60, ?61, ?62, ?63, ?64, ?65, ?66, ?67, ?68, ?69, ?70, ?71, ?72, ?73, ?74, ?75, ?76, ?77, ?78, ?79, ?80, ?81, ?82, ?83, ?84, ?85, ?86, ?87, ?88, ?89, ?90, ?91, ?92, ?93, ?94, ?95)"), 
@@ -345,7 +411,6 @@ pub(crate) async fn scrape(conn: &Connection){
                                 blue.totalPoints,
                             ]).unwrap();
                     
-                    conn.prepare("DELETE FROM matches2022 WHERE eventcode=:eventcode AND team1=:team1 AND team2=:team2").unwrap().execute(&[(":eventcode", eventcode), (":team1", &matchval.teams.get(0).unwrap().teamNumber.to_string()), (":team2", &matchval.teams.get(1).unwrap().teamNumber.to_string())]).unwrap();
                     let redres = conn.execute(&format!("INSERT INTO matches2022 (eventcode, team1, team2, matchNumber, randomization, alliance, team, sideOfField, initSignalSleeve1, initSignalSleeve2, robot1Auto, robot2Auto, autoTerminal, autoJunctions11, autoJunctions12, autoJunctions13, autoJunctions14, autoJunctions15, autoJunctions21, autoJunctions22, autoJunctions23, autoJunctions24, autoJunctions25, autoJunctions31, autoJunctions32, autoJunctions33, autoJunctions34, autoJunctions35, autoJunctions41, autoJunctions42, autoJunctions43, autoJunctions44, autoJunctions45, autoJunctions51, autoJunctions52, autoJunctions53, autoJunctions54, autoJunctions55, dcJunctions11, dcJunctions12, dcJunctions13, dcJunctions14, dcJunctions15, dcJunctions21, dcJunctions22, dcJunctions23, dcJunctions24, dcJunctions25, dcJunctions31, dcJunctions32, dcJunctions33, dcJunctions34, dcJunctions35, dcJunctions41, dcJunctions42, dcJunctions43, dcJunctions44, dcJunctions45, dcJunctions51, dcJunctions52, dcJunctions53, dcJunctions54, dcJunctions55, dcTerminalNear, dcTerminalFar, egNavigated1, egNavigated2, minorPenalties, majorPenalties, autoNavigationPoints, signalBonusPoints, autoJunctionConePoints, autoTerminalConePoints, dcJunctionConePoints, dcTerminalConePoints, ownershipPoints, circuitPoints, egNavigationPoints, autoPoints, dcPoints, endgamePoints, penaltyPointsCommitted, prePenaltyTotal, autoJunctionConesGnd, autoJunctionConesLow, autoJunctionConesMed, autoJunctionConesHigh, dcJunctionConesGnd, dcJunctionConesLow, dcJunctionConesMed, dcJunctionConesHigh, beacons, ownedJunctions, circuit, totalPoints) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60, ?61, ?62, ?63, ?64, ?65, ?66, ?67, ?68, ?69, ?70, ?71, ?72, ?73, ?74, ?75, ?76, ?77, ?78, ?79, ?80, ?81, ?82, ?83, ?84, ?85, ?86, ?87, ?88, ?89, ?90, ?91, ?92, ?93, ?94, ?95)"), 
                         params![eventcode,
                                 matchval.teams.get(0).unwrap().teamNumber,
@@ -444,6 +509,40 @@ pub(crate) async fn scrape(conn: &Connection){
                                 red.totalPoints,
                             ]).unwrap();
                 }).await;
+        }
+    }
+
+    if(!updateTeams){
+        return;
+    }
+
+    let mut req = client.get(format!("https://ftc-api.firstinspires.org/v2.0/2022/teams"))
+                .header("Authorization", format!("Basic {}", api_key_local))
+                .header("content-type", "application/json")
+                .build().unwrap();
+    
+    let teams_response: Teams_Response = serde_json::from_str(&client.execute(req).await.unwrap().text().await.unwrap()).unwrap();
+    
+    conn.call(|conn|{
+        conn.execute("CREATE TABLE IF NOT EXISTS teams2022 (teamNum, teamName)", []).unwrap();
+        conn.execute("DELETE FROM teams2022", []).unwrap();
+    }).await;
+
+    for i in 0..teams_response.pageTotal{
+        if(i%10 == 0){
+            println!("2022: Processed {} of {} team pages", (i+1), teams_response.pageTotal);
+        }
+        let mut req = client.get(format!("https://ftc-api.firstinspires.org/v2.0/2022/teams?page={}",(i+1)))
+                .header("Authorization", format!("Basic {}", api_key_local))
+                .header("content-type", "application/json")
+                .build().unwrap();
+    
+        let teams_response: Teams_Response = serde_json::from_str(&client.execute(req).await.unwrap().text().await.unwrap()).unwrap();
+
+        for team in teams_response.teams{
+            conn.call(move |conn|{
+                conn.execute("INSERT INTO teams2022 (teamNum, teamName) VALUES (?1, ?2)", [team.teamNumber.to_string(), team.nameShort.unwrap()]).unwrap();
+            }).await;
         }
     }
 }

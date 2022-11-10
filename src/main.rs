@@ -1,8 +1,17 @@
-use std::{path::Path, fs};
+use std::{path::Path, fs, any::Any, time::Duration};
+
+// Scheduler, and trait for .seconds(), .minutes(), etc.
+use clokwerk::{AsyncScheduler, TimeUnits};
+// Import week days and WeekDay
+use clokwerk::Interval::*;
+use std::thread;
 
 pub mod database;
 pub mod scrapers;
 pub mod insights;
+use tide::{Request, security::{CorsMiddleware, Origin}, http::headers::HeaderValue};
+use tide_governor::GovernorMiddleware;
+
 
 static mut API_KEY: String = String::new();
 
@@ -12,8 +21,90 @@ async fn main(){
         API_KEY = fs::read_to_string("api_key.txt").unwrap();
     }
 
+    println!("Initializing");
+
     database::initialize(Path::new("cache/matches.db")).await;
-    database::scrapeAndUpdate().await;
+    //database::scrapeAndUpdateAll().await;
+
+    let mut scheduler = AsyncScheduler::new();
     
-    println!("test");
+    scheduler.every(12.hours()).run(|| {database::scrapeAndUpdateAll()});
+    scheduler.every(5.minutes()).run(|| {database::scrapeAndUpdateToday()});
+
+    tokio::spawn(async move{
+        loop {
+            scheduler.run_pending().await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
+    
+    println!("Starting Server...");
+    let mut app = tide::new();
+    app.at("/v1/:year/insights/teams")
+        .with(GovernorMiddleware::per_second(2).unwrap())
+        .with(CorsMiddleware::new()
+        .allow_methods("GET, POST, OPTIONS".parse::<HeaderValue>().unwrap())
+        .allow_origin(Origin::from("*"))
+        .allow_credentials(false))
+        .get(get_insight_teams);
+    app.at("v1/:year/insights/team/:team")
+        .with(GovernorMiddleware::per_second(2).unwrap())
+        .with(CorsMiddleware::new()
+        .allow_methods("GET, POST, OPTIONS".parse::<HeaderValue>().unwrap())
+        .allow_origin(Origin::from("*"))
+        .allow_credentials(false))
+        .get(get_insight_team);
+    println!("Started Server!");
+    app.listen("127.0.0.1:7244").await.unwrap();
+}
+
+async fn get_insight_teams(mut req: Request<()>) -> tide::Result{
+    match(req.param("year")){
+        Ok(year) => {
+            if(year == "2022"){
+                unsafe{
+                    return get_json_response(insights::getTeams(year.to_owned()).await);
+                }
+            }else{
+                return Ok(tide::Response::builder(400).body("Invalid year entered").build());
+            }
+        },
+        Err(_) => {
+            return Ok(tide::Response::builder(400).body("Invalid parameters entered").build());
+        },
+    }
+}
+
+async fn get_insight_team(mut req: Request<()>) -> tide::Result{
+    match(req.param("year")){
+        Ok(year) => {
+            match(req.param("team")){
+                Ok(team) => {
+                    match(team.parse::<i32>()){
+                        Ok(teamnum) => {
+                            unsafe{
+                                return get_json_response(insights::getTeam(year.to_owned(), teamnum).await);
+                            }
+                        },
+                        Err(_) => {
+                            return Ok(tide::Response::builder(400).body("Invalid parameters entered").build());
+                        },
+                    }
+                },
+                Err(_) => {
+                    return Ok(tide::Response::builder(400).body("Invalid parameters entered").build());
+                },
+            }
+        },
+        Err(_) => {
+            return Ok(tide::Response::builder(400).body("Invalid parameters entered").build());
+        },
+    }
+}
+
+fn get_json_response(response: String) -> tide::Result{
+    return Ok(tide::Response::builder(200)
+    .content_type(tide::http::mime::JSON)
+    .body(response)
+    .build());
 }
